@@ -1018,3 +1018,63 @@
       console.log("Healthgrades scraper results:");
       console.table(
         results.map((r) => {
+          const { _raw_npis_found, _http, _error, ...rest } = r;
+          return rest;
+        })
+      );
+    } catch (e) {
+      console.error(e);
+      log(`Fatal error: ${String(e)}`);
+      alert("Scraper stopped due to an error. Check console.");
+    } finally {
+      isRunning = false;
+      startBtn.disabled = false;
+      urlsInput.disabled = false;
+      delayInput.disabled = false;
+      batchInput.disabled = false;
+
+      if (results.length) {
+        exportBtn.disabled = false;
+        copyBtn.disabled = false;
+      }
+    }
+  });
+
+  exportBtn.addEventListener("click", exportCsv);
+  copyBtn.addEventListener("click", copyCsv);
+
+  clearBtn.addEventListener("click", () => {
+    if (isRunning) {
+      alert("Cannot clear while scraper is running.");
+      return;
+    }
+
+    urlsInput.value = "";
+    results = [];
+    startTime = null;
+
+    progressInner.style.width = "0%";
+    progressText.textContent = "0/0";
+    doneText.textContent = "0";
+    resultsText.textContent = "0";
+    etaText.textContent = "--";
+    logBox.textContent = "Cleared.\n";
+    previewBox.innerHTML = "";
+
+    exportBtn.disabled = true;
+    copyBtn.disabled = true;
+  });
+
+  closeBtn.addEventListener("click", () => {
+    if (isRunning) {
+      const ok = confirm("Scraper is running. Close anyway?");
+      if (!ok) return;
+    }
+
+    panel.remove();
+    style.remove();
+    window.__HG_UI_SCRAPER_LOADED__ = false;
+  });
+
+  log("UI loaded. Paste URLs and click Start.");
+})();
