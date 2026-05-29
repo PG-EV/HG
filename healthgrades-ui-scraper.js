@@ -1,15 +1,12 @@
 (async () => {
-  // Prevent loading multiple times
-  if (window.__HG_SCRAPER_UI_LOADED__) {
+  if (window.__HG_UI_SCRAPER_LOADED__) {
     alert("Healthgrades scraper UI is already open.");
     return;
   }
-  window.__HG_SCRAPER_UI_LOADED__ = true;
 
-  // -----------------------
-  // Config
-  // -----------------------
-  const defaultConfig = {
+  window.__HG_UI_SCRAPER_LOADED__ = true;
+
+  const DEFAULTS = {
     delayMs: 900,
     batchSize: 6,
     maxRetries: 3,
@@ -18,13 +15,20 @@
 
   let results = [];
   let isRunning = false;
-  let startedAt = null;
+  let startTime = null;
 
-  // -----------------------
-  // Utilities
-  // -----------------------
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+  function normalizeUrl(u) {
+    if (!u) return "";
+    let url = String(u).trim();
+    url = url.replace(/[?&]place-id=(?=&|$)/i, "");
+    url = url.replace(/[?&]$/g, "");
+    url = url.replace(/\?place-id=$/i, "");
+    url = url.replace(/^http:\/\//i, "https://");
+    return url;
+  }
 
   function stripNoise(s) {
     if (!s) return "";
@@ -42,32 +46,15 @@
     return clean(t);
   }
 
-  const sanitize = (s) => {
+  function sanitize(s) {
     if (!s) return "";
     const t = String(s);
-    if (t.length > 250 && t.includes("{") && t.includes("}")) return "";
+
+    if (t.length > 250 && t.includes("{") && t.includes("}")) {
+      return "";
+    }
+
     return clean(t);
-  };
-
-  function normalizeUrl(u) {
-    if (!u) return "";
-    let url = u.trim();
-
-    url = url.replace(/[?&]place-id=(?=&|$)/i, "");
-    url = url.replace(/[?&]$/g, "");
-    url = url.replace(/\?place-id=$/i, "");
-    url = url.replace(/^http:\/\//i, "https://");
-
-    return url;
-  }
-
-  function formatDuration(ms) {
-    if (!ms || ms < 0 || !Number.isFinite(ms)) return "--";
-    const totalSeconds = Math.round(ms / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    if (minutes <= 0) return `${seconds}s`;
-    return `${minutes}m ${seconds}s`;
   }
 
   function escapeHtml(str) {
@@ -82,8 +69,28 @@
     return `"${String(value ?? "").replace(/"/g, '""')}"`;
   }
 
+  function formatDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "--";
+
+    const secondsTotal = Math.round(ms / 1000);
+    const minutes = Math.floor(secondsTotal / 60);
+    const seconds = secondsTotal % 60;
+
+    if (minutes <= 0) return `${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+  }
+
+  function makeCsv(rows) {
+    const cols = ["URL", "Name", "Specialty", "Address1", "City", "State", "NPI"];
+
+    return [
+      cols.join(","),
+      ...rows.map((r) => cols.map((c) => csvEscape(r[c])).join(","))
+    ].join("\n");
+  }
+
   // -----------------------
-  // Create UI
+  // UI
   // -----------------------
   const style = document.createElement("style");
   style.textContent = `
@@ -91,14 +98,14 @@
       position: fixed;
       top: 24px;
       right: 24px;
-      width: 460px;
+      width: 480px;
       max-width: calc(100vw - 48px);
-      z-index: 2147483647;
       background: #ffffff;
       color: #111827;
       border: 1px solid #d1d5db;
       border-radius: 16px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      box-shadow: 0 20px 70px rgba(0,0,0,0.3);
+      z-index: 2147483647;
       font-family: Arial, sans-serif;
       overflow: hidden;
     }
@@ -112,8 +119,8 @@
       background: #111827;
       color: white;
       display: flex;
-      align-items: center;
       justify-content: space-between;
+      align-items: center;
       cursor: move;
     }
 
@@ -123,11 +130,11 @@
       line-height: 1.2;
     }
 
-    #hgScraperClose {
-      border: none;
+    #hgCloseBtn {
       background: transparent;
+      border: 0;
       color: white;
-      font-size: 22px;
+      font-size: 24px;
       cursor: pointer;
       line-height: 1;
     }
@@ -139,14 +146,14 @@
     #hgScraperBody label {
       display: block;
       font-size: 12px;
-      font-weight: bold;
-      margin-bottom: 6px;
+      font-weight: 700;
       color: #374151;
+      margin-bottom: 6px;
     }
 
-    #hgUrls {
+    #hgUrlsInput {
       width: 100%;
-      height: 180px;
+      height: 175px;
       resize: vertical;
       border: 1px solid #d1d5db;
       border-radius: 10px;
@@ -154,9 +161,10 @@
       font-size: 12px;
       line-height: 1.4;
       outline: none;
+      font-family: Consolas, monospace;
     }
 
-    #hgUrls:focus {
+    #hgUrlsInput:focus {
       border-color: #2563eb;
       box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
     }
@@ -164,37 +172,18 @@
     .hgRow {
       display: flex;
       gap: 8px;
-      margin-top: 10px;
       align-items: center;
+      margin-top: 10px;
+      flex-wrap: wrap;
     }
 
     .hgBtn {
-      border: none;
+      border: 0;
       border-radius: 10px;
-      padding: 10px 12px;
-      font-weight: bold;
-      cursor: pointer;
+      padding: 10px 13px;
       font-size: 13px;
-    }
-
-    .hgBtnPrimary {
-      background: #2563eb;
-      color: white;
-    }
-
-    .hgBtnSuccess {
-      background: #16a34a;
-      color: white;
-    }
-
-    .hgBtnSecondary {
-      background: #e5e7eb;
-      color: #111827;
-    }
-
-    .hgBtnDanger {
-      background: #dc2626;
-      color: white;
+      font-weight: 700;
+      cursor: pointer;
     }
 
     .hgBtn:disabled {
@@ -202,54 +191,76 @@
       cursor: not-allowed;
     }
 
+    .hgPrimary {
+      background: #2563eb;
+      color: white;
+    }
+
+    .hgSuccess {
+      background: #16a34a;
+      color: white;
+    }
+
+    .hgSecondary {
+      background: #e5e7eb;
+      color: #111827;
+    }
+
+    .hgDanger {
+      background: #dc2626;
+      color: white;
+    }
+
     .hgSmallInput {
-      width: 72px;
+      width: 78px;
       border: 1px solid #d1d5db;
       border-radius: 8px;
       padding: 8px;
       font-size: 12px;
     }
 
-    #hgProgressWrap {
-      margin-top: 12px;
-      background: #e5e7eb;
-      height: 14px;
+    #hgProgressOuter {
+      width: 100%;
+      height: 15px;
       border-radius: 999px;
       overflow: hidden;
+      background: #e5e7eb;
+      margin-top: 12px;
     }
 
-    #hgProgressBar {
-      height: 100%;
+    #hgProgressInner {
       width: 0%;
+      height: 100%;
       background: linear-gradient(90deg, #2563eb, #22c55e);
       transition: width 0.25s ease;
     }
 
     #hgStats {
-      margin-top: 8px;
-      font-size: 12px;
-      color: #374151;
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 4px 8px;
+      gap: 5px 10px;
+      margin-top: 9px;
+      font-size: 12px;
+      color: #374151;
     }
 
-    #hgStatus {
+    #hgLog {
+      height: 78px;
+      overflow: auto;
       margin-top: 10px;
       padding: 8px;
-      background: #f9fafb;
       border: 1px solid #e5e7eb;
       border-radius: 10px;
-      height: 72px;
-      overflow: auto;
-      font-size: 11px;
+      background: #f9fafb;
       color: #374151;
       white-space: pre-wrap;
+      font-size: 11px;
+      font-family: Consolas, monospace;
     }
 
     #hgPreview {
       margin-top: 10px;
-      max-height: 150px;
+      max-height: 160px;
       overflow: auto;
       border: 1px solid #e5e7eb;
       border-radius: 10px;
@@ -270,11 +281,13 @@
     }
 
     #hgPreview th {
-      background: #f3f4f6;
       position: sticky;
       top: 0;
+      background: #f3f4f6;
+      z-index: 1;
     }
   `;
+
   document.head.appendChild(style);
 
   const panel = document.createElement("div");
@@ -282,40 +295,40 @@
   panel.innerHTML = `
     <div id="hgScraperHeader">
       <h2>Healthgrades Scraper</h2>
-      <button id="hgScraperClose" title="Close">×</button>
+      <button id="hgCloseBtn" title="Close">×</button>
     </div>
 
     <div id="hgScraperBody">
-      <label for="hgUrls">Input URLs, one per line</label>
-      <textarea id="hgUrls" placeholder="Paste Healthgrades URLs here, one per line..."></textarea>
+      <label for="hgUrlsInput">Input URLs, one per line</label>
+      <textarea id="hgUrlsInput" placeholder="Paste Healthgrades URLs here, one per line..."></textarea>
 
       <div class="hgRow">
-        <button id="hgStartBtn" class="hgBtn hgBtnPrimary">Start</button>
-        <button id="hgExportBtn" class="hgBtn hgBtnSuccess" disabled>Export CSV</button>
-        <button id="hgClearBtn" class="hgBtn hgBtnSecondary">Clear</button>
+        <button id="hgStartBtn" class="hgBtn hgPrimary">Start</button>
+        <button id="hgExportBtn" class="hgBtn hgSuccess" disabled>Export CSV</button>
+        <button id="hgCopyBtn" class="hgBtn hgSecondary" disabled>Copy CSV</button>
+        <button id="hgClearBtn" class="hgBtn hgSecondary">Clear</button>
       </div>
 
       <div class="hgRow">
         <label style="margin:0;">Delay ms</label>
-        <input id="hgDelayMs" class="hgSmallInput" type="number" value="${defaultConfig.delayMs}" min="100">
+        <input id="hgDelayInput" class="hgSmallInput" type="number" min="100" value="${DEFAULTS.delayMs}">
 
         <label style="margin:0;">Batch</label>
-        <input id="hgBatchSize" class="hgSmallInput" type="number" value="${defaultConfig.batchSize}" min="1" max="10">
+        <input id="hgBatchInput" class="hgSmallInput" type="number" min="1" max="10" value="${DEFAULTS.batchSize}">
       </div>
 
-      <div id="hgProgressWrap">
-        <div id="hgProgressBar"></div>
+      <div id="hgProgressOuter">
+        <div id="hgProgressInner"></div>
       </div>
 
       <div id="hgStats">
         <div><b>Progress:</b> <span id="hgProgressText">0/0</span></div>
         <div><b>ETA:</b> <span id="hgEtaText">--</span></div>
-        <div><b>Completed:</b> <span id="hgDoneText">0</span></div>
-        <div><b>Results:</b> <span id="hgResultCount">0</span></div>
+        <div><b>Done:</b> <span id="hgDoneText">0</span></div>
+        <div><b>Results:</b> <span id="hgResultsText">0</span></div>
       </div>
 
-      <div id="hgStatus">Ready.</div>
-
+      <div id="hgLog">Ready.</div>
       <div id="hgPreview"></div>
     </div>
   `;
@@ -324,53 +337,54 @@
 
   const $ = (id) => document.getElementById(id);
 
-  const urlsBox = $("hgUrls");
+  const urlsInput = $("hgUrlsInput");
   const startBtn = $("hgStartBtn");
   const exportBtn = $("hgExportBtn");
+  const copyBtn = $("hgCopyBtn");
   const clearBtn = $("hgClearBtn");
-  const closeBtn = $("hgScraperClose");
-  const delayInput = $("hgDelayMs");
-  const batchInput = $("hgBatchSize");
-  const progressBar = $("hgProgressBar");
+  const closeBtn = $("hgCloseBtn");
+  const delayInput = $("hgDelayInput");
+  const batchInput = $("hgBatchInput");
+  const progressInner = $("hgProgressInner");
   const progressText = $("hgProgressText");
   const etaText = $("hgEtaText");
   const doneText = $("hgDoneText");
-  const resultCount = $("hgResultCount");
-  const statusBox = $("hgStatus");
+  const resultsText = $("hgResultsText");
+  const logBox = $("hgLog");
   const previewBox = $("hgPreview");
 
-  function logStatus(message) {
+  function log(message) {
     const time = new Date().toLocaleTimeString();
-    statusBox.textContent = `[${time}] ${message}\n` + statusBox.textContent;
+    logBox.textContent = `[${time}] ${message}\n` + logBox.textContent;
   }
 
   function updateProgress(done, total, currentUrl = "", note = "") {
     const pct = total ? Math.floor((done / total) * 100) : 0;
-    progressBar.style.width = `${pct}%`;
+
+    progressInner.style.width = `${pct}%`;
     progressText.textContent = `${done}/${total}`;
     doneText.textContent = String(done);
-    resultCount.textContent = String(results.length);
+    resultsText.textContent = String(results.length);
 
-    if (startedAt && done > 0 && total > done) {
-      const elapsed = Date.now() - startedAt;
-      const avgPerItem = elapsed / done;
-      const remaining = total - done;
-      etaText.textContent = formatDuration(avgPerItem * remaining);
+    if (startTime && done > 0 && total > done) {
+      const elapsed = Date.now() - startTime;
+      const avg = elapsed / done;
+      etaText.textContent = formatDuration(avg * (total - done));
     } else if (total && done >= total) {
       etaText.textContent = "Done";
     } else {
       etaText.textContent = "--";
     }
 
-    if (currentUrl || note) {
-      logStatus(`${note || "Working"} ${currentUrl ? "— " + currentUrl : ""}`);
+    if (note || currentUrl) {
+      log(`${note || "Working"}${currentUrl ? " — " + currentUrl : ""}`);
     }
   }
 
   function renderPreview() {
-    const lastRows = results.slice(-8);
+    const rows = results.slice(-8);
 
-    if (!lastRows.length) {
+    if (!rows.length) {
       previewBox.innerHTML = "";
       return;
     }
@@ -387,7 +401,7 @@
           </tr>
         </thead>
         <tbody>
-          ${lastRows.map(r => `
+          ${rows.map((r) => `
             <tr>
               <td>${escapeHtml(r.Name)}</td>
               <td>${escapeHtml(r.Specialty)}</td>
@@ -401,12 +415,10 @@
     `;
   }
 
-  // -----------------------
-  // Draggable panel
-  // -----------------------
+  // Drag panel
   (() => {
     const header = $("hgScraperHeader");
-    let isDragging = false;
+    let dragging = false;
     let startX = 0;
     let startY = 0;
     let startRight = 0;
@@ -416,7 +428,8 @@
       if (e.target === closeBtn) return;
 
       const rect = panel.getBoundingClientRect();
-      isDragging = true;
+
+      dragging = true;
       startX = e.clientX;
       startY = e.clientY;
       startRight = window.innerWidth - rect.right;
@@ -426,7 +439,7 @@
     });
 
     document.addEventListener("mousemove", (e) => {
-      if (!isDragging) return;
+      if (!dragging) return;
 
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
@@ -436,17 +449,18 @@
     });
 
     document.addEventListener("mouseup", () => {
-      isDragging = false;
+      dragging = false;
       document.body.style.userSelect = "";
     });
   })();
 
   // -----------------------
-  // Deep walk and find
+  // Object parsing helpers
   // -----------------------
   function walkObject(obj, fn, seen = new Set()) {
     if (!obj || typeof obj !== "object") return;
     if (seen.has(obj)) return;
+
     seen.add(obj);
     fn(obj);
 
@@ -474,23 +488,15 @@
     return found;
   }
 
-  // -----------------------
-  // Parse JSON-like strings
-  // -----------------------
   function tryParseJsonCandidates(html) {
     const candidates = new Set();
-
-    const reAssign = /(?:window|window\.)?__INITIAL_STATE__\s*=\s*({[\s\S]*?});/g;
     let m;
 
-    while ((m = reAssign.exec(html)) !== null) {
-      candidates.add(m[1]);
-    }
+    const reAssign = /(?:window|window\.)?__INITIAL_STATE__\s*=\s*({[\s\S]*?});/g;
+    while ((m = reAssign.exec(html)) !== null) candidates.add(m[1]);
 
     const reJsonBlob = /({\s*"[^"]{1,40}"[\s\S]{10,12000}?})/g;
-    while ((m = reJsonBlob.exec(html)) !== null) {
-      candidates.add(m[1]);
-    }
+    while ((m = reJsonBlob.exec(html)) !== null) candidates.add(m[1]);
 
     const reEscaped = /"(\\{\\s*\\\\"?[^"]{1,40}[\s\S]{5,8000}?\\}+)"/g;
     while ((m = reEscaped.exec(html)) !== null) {
@@ -529,9 +535,6 @@
     return parsedObjects;
   }
 
-  // -----------------------
-  // Extractors
-  // -----------------------
   function extractNpisFromHtml(html) {
     const hits = new Set();
     let m;
@@ -582,11 +585,13 @@
           "providerFullName"
         ]);
 
-        if (typeof n === "string" && n.trim()) out.name = n;
+        if (typeof n === "string" && n.trim()) {
+          out.name = n;
+        }
       }
 
       if (!out.specialty) {
-        let s = findFirst(obj, [
+        const s = findFirst(obj, [
           "primarySpecialty",
           "practicingSpecialty",
           "practicingSpecialityName",
@@ -630,6 +635,17 @@
         if (n) {
           if (typeof n === "string" && /\d{10}/.test(n)) {
             out.npi = (n.match(/\d{10}/) || [""])[0];
+          } else if (Array.isArray(n)) {
+            for (const it of n) {
+              const cand = typeof it === "string"
+                ? it
+                : String(it?.value || it?.identifier || "");
+
+              if (/\d{10}/.test(cand)) {
+                out.npi = cand.match(/\d{10}/)[0];
+                break;
+              }
+            }
           } else if (typeof n === "object") {
             if (n.value && /\d{10}/.test(String(n.value))) {
               out.npi = String(n.value).match(/\d{10}/)[0];
@@ -637,15 +653,6 @@
 
             if (!out.npi && n.identifier && /\d{10}/.test(String(n.identifier))) {
               out.npi = String(n.identifier).match(/\d{10}/)[0];
-            }
-          } else if (Array.isArray(n)) {
-            for (const it of n) {
-              const cand = typeof it === "string" ? it : String(it?.value || it?.identifier || "");
-
-              if (/\d{10}/.test(cand)) {
-                out.npi = cand.match(/\d{10}/)[0];
-                break;
-              }
             }
           }
         }
@@ -737,19 +744,17 @@
         .map((x) => x.trim())
         .filter(Boolean);
 
-      if (lines.length) {
-        for (const line of lines) {
-          const mm = line.match(/([^,]+),\s*([A-Z]{2})\s*\d{5}?/);
+      for (const line of lines) {
+        const mm = line.match(/([^,]+),\s*([A-Z]{2})\s*\d{5}?/);
 
-          if (mm) {
-            out.city = out.city || clean(mm[1]);
-            out.state = out.state || clean(mm[2]);
-          }
+        if (mm) {
+          out.city = out.city || clean(mm[1]);
+          out.state = out.state || clean(mm[2]);
         }
-
-        const addrLine = lines.find((l) => /^[0-9]/.test(l));
-        if (addrLine) out.address1 = out.address1 || clean(addrLine);
       }
+
+      const addrLine = lines.find((l) => /^[0-9]/.test(l));
+      if (addrLine) out.address1 = out.address1 || clean(addrLine);
 
       if (out.address1 || out.city || out.state) break;
     }
@@ -768,11 +773,7 @@
     return out;
   }
 
-  // -----------------------
-  // Fetch with retries
-  // -----------------------
-  async function fetchWithRetry(url, attempt = 0) {
-    const maxRetries = defaultConfig.maxRetries;
+  async function fetchWithRetry(url, config, attempt = 0) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
 
@@ -791,10 +792,10 @@
       if (!res.ok) {
         const retryable = [429, 500, 502, 503, 504].includes(res.status);
 
-        if (retryable && attempt < maxRetries) {
+        if (retryable && attempt < config.maxRetries) {
           const backoff = (attempt + 1) * 1200 + Math.floor(Math.random() * 500);
           await sleep(backoff);
-          return fetchWithRetry(url, attempt + 1);
+          return fetchWithRetry(url, config, attempt + 1);
         }
       }
 
@@ -804,15 +805,12 @@
     }
   }
 
-  // -----------------------
-  // Scrape one URL
-  // -----------------------
   async function scrapeOne(inputUrl, config) {
     const url = normalizeUrl(inputUrl);
 
     await sleep(config.delayMs + Math.floor(Math.random() * 250));
 
-    const res = await fetchWithRetry(url);
+    const res = await fetchWithRetry(url, config);
     const statusNote = `HTTP ${res.status}${res.ok ? "" : " not ok"}`;
 
     const html = await res.text();
@@ -872,9 +870,6 @@
     };
   }
 
-  // -----------------------
-  // Batch runner
-  // -----------------------
   async function runInBatches(urls, config) {
     results = [];
     let done = 0;
@@ -887,14 +882,14 @@
           updateProgress(done, urls.length, normalizeUrl(url), "Working");
 
           try {
-            const r = await scrapeOne(url, config);
+            const row = await scrapeOne(url, config);
             done++;
 
-            results.push(r);
-            updateProgress(done, urls.length, r.URL, r._http || "Done");
+            results.push(row);
+            updateProgress(done, urls.length, row.URL, row._http || "Done");
             renderPreview();
 
-            return r;
+            return row;
           } catch (e) {
             done++;
 
@@ -924,39 +919,45 @@
     return results;
   }
 
-  // -----------------------
-  // Export CSV
-  // -----------------------
   function exportCsv() {
     if (!results.length) {
-      alert("No results to export yet.");
+      alert("No results to export.");
       return;
     }
 
-    const cols = ["URL", "Name", "Specialty", "Address1", "City", "State", "NPI"];
-
-    const csv = [
-      cols.join(","),
-      ...results.map((r) => cols.map((c) => csvEscape(r[c])).join(","))
-    ].join("\n");
-
+    const csv = makeCsv(results);
     const blob = new Blob([csv], {
       type: "text/csv;charset=utf-8"
     });
 
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = defaultConfig.fileName;
+    a.download = DEFAULTS.fileName;
     document.body.appendChild(a);
     a.click();
     a.remove();
 
-    logStatus(`CSV exported: ${defaultConfig.fileName}`);
+    log(`CSV exported: ${DEFAULTS.fileName}`);
   }
 
-  // -----------------------
-  // Event handlers
-  // -----------------------
+  async function copyCsv() {
+    if (!results.length) {
+      alert("No results to copy.");
+      return;
+    }
+
+    const csv = makeCsv(results);
+
+    try {
+      await navigator.clipboard.writeText(csv);
+      log("CSV copied to clipboard.");
+      alert("CSV copied to clipboard.");
+    } catch (e) {
+      console.error(e);
+      alert("Could not copy CSV. Use Export CSV instead.");
+    }
+  }
+
   startBtn.addEventListener("click", async () => {
     if (isRunning) {
       alert("Scraper is already running.");
@@ -965,7 +966,7 @@
 
     const urls = [
       ...new Set(
-        urlsBox.value
+        urlsInput.value
           .split(/\n+/)
           .map((s) => s.trim())
           .filter(Boolean)
@@ -974,85 +975,46 @@
     ];
 
     if (!urls.length) {
-      alert("Please paste at least one Healthgrades URL.");
+      alert("Paste at least one Healthgrades URL.");
       return;
     }
 
-    const delayMs = Math.max(100, Number(delayInput.value || defaultConfig.delayMs));
-    const batchSize = Math.min(10, Math.max(1, Number(batchInput.value || defaultConfig.batchSize)));
+    const delayMs = Math.max(100, Number(delayInput.value || DEFAULTS.delayMs));
+    const batchSize = Math.min(10, Math.max(1, Number(batchInput.value || DEFAULTS.batchSize)));
 
     const config = {
-      ...defaultConfig,
+      ...DEFAULTS,
       delayMs,
       batchSize
     };
 
     results = [];
     isRunning = true;
-    startedAt = Date.now();
+    startTime = Date.now();
 
     startBtn.disabled = true;
     exportBtn.disabled = true;
-    urlsBox.disabled = true;
+    copyBtn.disabled = true;
+    urlsInput.disabled = true;
     delayInput.disabled = true;
     batchInput.disabled = true;
 
-    progressBar.style.width = "0%";
+    progressInner.style.width = "0%";
+    progressText.textContent = `0/${urls.length}`;
+    doneText.textContent = "0";
+    resultsText.textContent = "0";
     etaText.textContent = "--";
-    statusBox.textContent = "Starting...\n";
+    logBox.textContent = "Starting...\n";
     previewBox.innerHTML = "";
 
     try {
       updateProgress(0, urls.length, "", "Starting");
       await runInBatches(urls, config);
 
-      logStatus("Finished.");
+      log("Finished.");
       exportBtn.disabled = false;
-    } catch (e) {
-      console.error(e);
-      logStatus(`Fatal error: ${String(e)}`);
-      alert("Scraper stopped because of an error. Check the status box or console.");
-    } finally {
-      isRunning = false;
-      startBtn.disabled = false;
-      urlsBox.disabled = false;
-      delayInput.disabled = false;
-      batchInput.disabled = false;
+      copyBtn.disabled = false;
 
-      if (results.length) exportBtn.disabled = false;
-    }
-  });
-
-  exportBtn.addEventListener("click", exportCsv);
-
-  clearBtn.addEventListener("click", () => {
-    if (isRunning) {
-      alert("Cannot clear while scraper is running.");
-      return;
-    }
-
-    urlsBox.value = "";
-    results = [];
-    progressBar.style.width = "0%";
-    progressText.textContent = "0/0";
-    doneText.textContent = "0";
-    resultCount.textContent = "0";
-    etaText.textContent = "--";
-    statusBox.textContent = "Cleared.\n";
-    previewBox.innerHTML = "";
-    exportBtn.disabled = true;
-  });
-
-  closeBtn.addEventListener("click", () => {
-    if (isRunning) {
-      const ok = confirm("Scraper is running. Close panel anyway?");
-      if (!ok) return;
-    }
-
-    panel.remove();
-    style.remove();
-    window.__HG_SCRAPER_UI_LOADED__ = false;
-  });
-
-  logStatus("UI loaded. Paste URLs and click Start.");
-})();
+      console.log("Healthgrades scraper results:");
+      console.table(
+        results.map((r) => {
